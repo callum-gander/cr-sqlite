@@ -62,8 +62,8 @@ pub struct crsql_ExtData {
     pub siteId: *mut ::core::ffi::c_uchar,
     pub pDbVersionStmt: *mut sqlite::stmt,
     pub pSetDbVersionStmt: *mut sqlite::stmt,
-    pub lastDbVersions: *mut ::core::ffi::c_void,
     pub tableInfos: *mut ::core::ffi::c_void,
+    pub lastDbVersions: *mut ::core::ffi::c_void,
     pub rowsImpacted: ::core::ffi::c_int,
     pub seq: ::core::ffi::c_int,
     pub pSetSyncBitStmt: *mut sqlite::stmt,
@@ -392,23 +392,23 @@ fn bindgen_test_layout_crsql_ExtData() {
         )
     );
     assert_eq!(
-        unsafe { ::core::ptr::addr_of!((*ptr).lastDbVersions) as usize - ptr as usize },
+        unsafe { ::core::ptr::addr_of!((*ptr).tableInfos) as usize - ptr as usize },
         80usize,
         concat!(
             "Offset of field: ",
             stringify!(crsql_ExtData),
             "::",
-            stringify!(lastDbVersions)
+            stringify!(tableInfos)
         )
     );
     assert_eq!(
-        unsafe { ::core::ptr::addr_of!((*ptr).tableInfos) as usize - ptr as usize },
+        unsafe { ::core::ptr::addr_of!((*ptr).lastDbVersions) as usize - ptr as usize },
         88usize,
         concat!(
             "Offset of field: ",
             stringify!(crsql_ExtData),
             "::",
-            stringify!(tableInfos)
+            stringify!(lastDbVersions)
         )
     );
     assert_eq!(
