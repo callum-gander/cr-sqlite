@@ -9,16 +9,19 @@ SQLITE_EXTENSION_INIT3
 int crsql_close(sqlite3 *db) {
   int rc = SQLITE_OK;
   rc += sqlite3_exec(db, "SELECT crsql_finalize()", 0, 0, 0);
-  // printf("finalize rc: %d\n", rc);
-  rc += sqlite3_close(db);
-  // printf("close rc: %d\n", rc);
 
-  sqlite3_stmt *next = NULL;
-  next = sqlite3_next_stmt(db, NULL);
-  if (next != NULL) {
-    const char *sql = NULL;
-    sql = sqlite3_expanded_sql(next);
-    printf("unfinalized sql: %s\n", sql);
+  int close_rc = sqlite3_close(db);
+  rc += close_rc;
+
+  // sqlite3_next_stmt must not be called after sqlite3_close succeeds.
+  // If close failed (e.g. SQLITE_BUSY), the connection is still open and we
+  // can inspect the first outstanding statement for debugging.
+  if (close_rc != SQLITE_OK) {
+    sqlite3_stmt *next = sqlite3_next_stmt(db, NULL);
+    if (next != NULL) {
+      const char *sql = sqlite3_expanded_sql(next);
+      printf("unfinalized sql: %s\n", sql);
+    }
   }
 
   return rc;

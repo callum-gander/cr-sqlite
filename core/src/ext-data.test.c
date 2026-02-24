@@ -12,6 +12,10 @@ int crsql_close(sqlite3 *db);
 
 crsql_ExtData *crsqlExtDataInit(sqlite3 *db, unsigned char *siteIdBuffer) {
   crsql_ExtData *pExtData = crsql_newExtData(db);
+  if (pExtData == 0) {
+    fprintf(stderr, "crsql_newExtData returned NULL: %s\n", sqlite3_errmsg(db));
+    assert(0);
+  }
   int rc = crsql_initSiteIdExt(db, pExtData, siteIdBuffer);
   assert(rc == 0);
   return pExtData;
