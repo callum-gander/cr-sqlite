@@ -251,22 +251,17 @@ pub fn insert_db_version(
             reset_cached_stmt((*ext_data).pSetDbVersionStmt)?;
             return Err(rc);
         }
-        match (*ext_data).pSetDbVersionStmt.step() {
-            Ok(ResultCode::ROW) => {
-                last_db_versions.insert(
-                    insert_site_id.to_vec(),
-                    (*ext_data).pSetDbVersionStmt.column_int64(0),
-                );
-            }
-            Ok(_) => {}
-            Err(rc) => {
-                reset_cached_stmt((*ext_data).pSetDbVersionStmt)?;
-                return Err(rc);
-            }
-        }
+
+        let res = (*ext_data).pSetDbVersionStmt.step();
         reset_cached_stmt((*ext_data).pSetDbVersionStmt)?;
+        if let Err(rc) = res {
+            return Err(rc);
+        }
+
+        // this is still the biggest db version we've seen in this transaction.
+        last_db_versions.insert(insert_site_id.to_vec(), insert_db_vrsn);
+        Ok(())
     }
-    Ok(())
 }
 
 pub unsafe fn get_or_set_site_ordinal(
