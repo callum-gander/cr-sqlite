@@ -3,6 +3,7 @@ use core::mem;
 
 use crate::alloc::string::ToString;
 use crate::alloc::{boxed::Box, vec::Vec};
+use alloc::collections::btree_map::Entry;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
@@ -223,11 +224,34 @@ pub fn insert_db_version(
                 (*ext_data).lastDbVersions as *mut BTreeMap<Vec<u8>, i64>,
             ));
 
-        if let Some(db_v) = last_db_versions.get(insert_site_id) {
-            if *db_v >= insert_db_vrsn {
-                // already inserted a greater or equal db version!
-                return Ok(());
+        let cached_db_v = match last_db_versions.entry(insert_site_id.to_vec()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let db_version_stmt = (*ext_data).pDbVersionStmt;
+                let bind_result =
+                    db_version_stmt.bind_blob(1, insert_site_id, sqlite::Destructor::STATIC);
+                if let Err(rc) = bind_result {
+                    reset_cached_stmt(db_version_stmt)?;
+                    return Err(rc);
+                }
+                let fetched = match db_version_stmt.step() {
+                    Ok(ResultCode::ROW) => db_version_stmt.column_int64(0),
+                    // No version found for this site_id
+                    // use -1 as it will never be greater than the inserted db version
+                    Ok(_) => -1,
+                    Err(rc) => {
+                        reset_cached_stmt(db_version_stmt)?;
+                        return Err(rc);
+                    }
+                };
+                reset_cached_stmt(db_version_stmt)?;
+                *entry.insert(fetched)
             }
+        };
+
+        if cached_db_v >= insert_db_vrsn {
+            // already inserted a greater or equal db version!
+            return Ok(());
         }
 
         // ensure the site_id exists in the crsql_site_id table

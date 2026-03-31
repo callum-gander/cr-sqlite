@@ -362,12 +362,99 @@ fn get_cache_ordinal(db: *mut sqlite::sqlite3, site_id: &[u8]) -> Result<i64, Re
     Ok(stmt.column_int64(0))
 }
 
+fn get_cache_db_version(db: *mut sqlite::sqlite3, site_id: &[u8]) -> Result<i64, ResultCode> {
+    let stmt = db.prepare_v2("SELECT crsql_cache_db_version(?);")?;
+    stmt.bind_blob(1, site_id, sqlite::Destructor::STATIC)?;
+    stmt.step()?;
+    Ok(stmt.column_int64(0))
+}
+
+/// Test that insert_db_version always populates the lastDbVersions cache.
+/// This is a regression test for https://github.com/superfly/cr-sqlite/pull/21
+/// Previously, the cache was only populated when the SET statement returned a ROW,
+/// making it mostly useless since it's cleared on commit/rollback.
+fn test_insert_db_version_cache() -> Result<(), ResultCode> {
+    let c = crate::opendb().expect("db opened");
+    let db = &c.db;
+    db.db
+        .exec_safe("CREATE TABLE foo (a primary key not null, b);")?;
+    db.db.exec_safe("SELECT crsql_as_crr('foo');")?;
+
+    let remote_site = "remote_site".as_bytes();
+
+    db.db.exec_safe("BEGIN TRANSACTION;")?;
+
+    // cache should be empty before any remote inserts
+    assert_eq!(-1, get_cache_db_version(db.db, remote_site)?);
+
+    // insert a change from a remote site with db_version=1
+    let pk1: [u8; 3] = [1, 9, 1];
+    let stmt = db.db.prepare_v2(
+        "INSERT INTO crsql_changes VALUES ('foo', ?, 'b', 1, 1, 1, ?, 1, 0, 0);",
+    )?;
+    stmt.bind_blob(1, &pk1, sqlite::Destructor::STATIC)?;
+    stmt.bind_blob(2, remote_site, sqlite::Destructor::STATIC)?;
+    stmt.step()?;
+
+    // cache should now contain db_version=1 for the remote site
+    assert_eq!(1, get_cache_db_version(db.db, remote_site)?);
+
+    // insert another change from the same remote site with db_version=3 (higher)
+    let pk2: [u8; 3] = [1, 9, 2];
+    let stmt2 = db.db.prepare_v2(
+        "INSERT INTO crsql_changes VALUES ('foo', ?, 'b', 2, 1, 3, ?, 1, 0, 0);",
+    )?;
+    stmt2.bind_blob(1, &pk2, sqlite::Destructor::STATIC)?;
+    stmt2.bind_blob(2, remote_site, sqlite::Destructor::STATIC)?;
+    stmt2.step()?;
+
+    // cache should now reflect the higher db_version=3
+    assert_eq!(3, get_cache_db_version(db.db, remote_site)?);
+
+    // insert a change with a lower db_version=2 from the same site
+    // this should be short-circuited by the cache (no DB write needed)
+    let pk3: [u8; 3] = [1, 9, 3];
+    let stmt3 = db.db.prepare_v2(
+        "INSERT INTO crsql_changes VALUES ('foo', ?, 'b', 3, 1, 2, ?, 1, 0, 0);",
+    )?;
+    stmt3.bind_blob(1, &pk3, sqlite::Destructor::STATIC)?;
+    stmt3.bind_blob(2, remote_site, sqlite::Destructor::STATIC)?;
+    stmt3.step()?;
+
+    // cache should still show db_version=3 (not downgraded)
+    assert_eq!(3, get_cache_db_version(db.db, remote_site)?);
+
+    // commit clears the cache
+    db.db.exec_safe("COMMIT;")?;
+    assert_eq!(-1, get_cache_db_version(db.db, remote_site)?);
+
+    // new transaction: inserting a lower db_version (2) should be short-circuited
+    // because we fetch the latest db_version from DB on cache miss
+    db.db.exec_safe("BEGIN TRANSACTION;")?;
+    let pk4: [u8; 3] = [1, 9, 4];
+    let stmt4 = db.db.prepare_v2(
+        "INSERT INTO crsql_changes VALUES ('foo', ?, 'b', 4, 1, 2, ?, 1, 0, 0);",
+    )?;
+    stmt4.bind_blob(1, &pk4, sqlite::Destructor::STATIC)?;
+    stmt4.bind_blob(2, remote_site, sqlite::Destructor::STATIC)?;
+    stmt4.step()?;
+
+    // The cache contains the latest db_version from the DB
+    assert_eq!(3, get_cache_db_version(db.db, remote_site)?);
+
+    db.db.exec_safe("COMMIT;")?;
+
+    Ok(())
+}
+
 pub fn run_suite() -> Result<(), String> {
     test_fetch_db_version_from_storage()?;
     test_next_db_version()?;
     test_get_or_set_site_ordinal()
         .map_err(|e| format!("test_get_or_set_site_ordinal failed: {:?}", e))?;
     test_get_or_set_pk_cl().map_err(|e| format!("test_get_or_set_pk_cl failed: {:?}", e))?;
+    test_insert_db_version_cache()
+        .map_err(|e| format!("test_insert_db_version_cache failed: {:?}", e))?;
     Ok(())
 }
 
