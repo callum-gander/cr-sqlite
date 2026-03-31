@@ -484,6 +484,21 @@ pub extern "C" fn sqlite3_crsqlcore_init(
         return null_mut();
     }
 
+    #[cfg(feature = "test")]
+    if let Err(_) = db.create_function_v2(
+        "crsql_cache_db_version",
+        1,
+        sqlite::UTF8 | sqlite::DETERMINISTIC,
+        Some(ext_data as *mut c_void),
+        Some(x_crsql_cache_db_version),
+        None,
+        None,
+        None,
+    ) {
+        unsafe { crsql_freeExtData(ext_data) };
+        return null_mut();
+    }
+
     let rc = db
         .create_function_v2(
             "crsql_set_db_version",
@@ -1021,6 +1036,34 @@ unsafe extern "C" fn x_crsql_cache_pk_cl(
     } else {
         ctx.result_error("table not found");
     }
+}
+
+/**
+ * Get the db_version cached in the ext data for the current transaction for a given site_id.
+ * only used for test to inspect the lastDbVersions map.
+ */
+#[cfg(feature = "test")]
+unsafe extern "C" fn x_crsql_cache_db_version(
+    ctx: *mut sqlite::context,
+    argc: i32,
+    argv: *mut *mut sqlite::value,
+) {
+    if argc == 0 {
+        ctx.result_error(
+            "Wrong number of args provided to crsql_cache_db_version. Provide the site id.",
+        );
+        return;
+    }
+
+    let ext_data = ctx.user_data() as *mut c::crsql_ExtData;
+    let args = sqlite::args!(argc, argv);
+    let site_id = args[0].blob();
+
+    let db_versions_map = mem::ManuallyDrop::new(Box::from_raw(
+        (*ext_data).lastDbVersions as *mut BTreeMap<Vec<u8>, i64>,
+    ));
+    let res = db_versions_map.get(site_id).cloned().unwrap_or(-1);
+    sqlite::result_int64(ctx, res);
 }
 
 /**
