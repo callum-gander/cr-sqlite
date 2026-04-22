@@ -11,7 +11,7 @@ use sqlite_nostd::{sqlite3, ResultCode, Value};
 use crate::c::crsql_ExtData;
 use crate::c::{crsql_Changes_vtab, CrsqlChangesColumn};
 use crate::compare_values::crsql_compare_sqlite_values;
-use crate::db_version::{get_or_set_site_ordinal, insert_db_version};
+use crate::db_version::{get_or_set_site_ordinal, insert_db_version, next_merge_db_version};
 use crate::pack_columns::bind_package_to_stmt;
 use crate::pack_columns::{unpack_columns, ColumnValue};
 use crate::stmt_cache::reset_cached_stmt;
@@ -472,6 +472,19 @@ unsafe fn merge_insert(
 
     let insert_site_id = insert_site_id.blob();
 
+    let our_site_id = core::slice::from_raw_parts(
+        (*(*tab).pExtData).siteId,
+        crate::consts::SITE_ID_LEN as usize,
+    );
+    let local_db_vrsn = match next_merge_db_version(db, (*tab).pExtData, insert_site_id, insert_db_vrsn) {
+        Ok(v) => v,
+        Err(msg) => {
+            let err = CString::new(msg)?;
+            *errmsg = err.into_raw();
+            return Err(ResultCode::ERROR);
+        }
+    };
+
     let mut tbl_infos = mem::ManuallyDrop::new(Box::from_raw(
         (*(*tab).pExtData).tableInfos as *mut Vec<TableInfo>,
     ));
@@ -538,7 +551,7 @@ unsafe fn merge_insert(
                         key,
                         insert_col,
                         insert_col_vrsn,
-                        insert_db_vrsn,
+                        local_db_vrsn,
                         insert_site_id,
                         insert_seq,
                         insert_ts,
@@ -554,7 +567,7 @@ unsafe fn merge_insert(
                 &unpacked_pks,
                 key,
                 insert_col_vrsn,
-                insert_db_vrsn,
+                local_db_vrsn,
                 insert_site_id,
                 insert_seq,
                 insert_ts,
@@ -592,7 +605,7 @@ unsafe fn merge_insert(
                 &unpacked_pks,
                 key,
                 insert_col_vrsn,
-                insert_db_vrsn,
+                local_db_vrsn,
                 insert_site_id,
                 insert_seq,
                 insert_ts,
@@ -621,7 +634,7 @@ unsafe fn merge_insert(
                 &unpacked_pks,
                 key,
                 insert_cl,
-                insert_db_vrsn,
+                local_db_vrsn,
                 insert_site_id,
                 insert_seq,
                 insert_ts,
@@ -693,7 +706,7 @@ unsafe fn merge_insert(
             key,
             insert_col,
             insert_col_vrsn,
-            insert_db_vrsn,
+            local_db_vrsn,
             insert_site_id,
             insert_seq,
             insert_ts,
@@ -711,7 +724,9 @@ unsafe fn merge_insert(
     })();
 
     // Update the received db_version whether the change won or not.
-    if res.is_ok() && !insert_site_id.is_empty() {
+    // Skip for our own site_id: we manage our own version internally, and
+    // other nodes may have assigned higher local versions to our changes.
+    if res.is_ok() && !insert_site_id.is_empty() && insert_site_id != our_site_id {
         if let Err(rc) = insert_db_version((*tab).pExtData, insert_site_id, insert_db_vrsn) {
             let err = CString::new(format!(
                 "Unable to insert db version {} for site id {:?}: {:?}",

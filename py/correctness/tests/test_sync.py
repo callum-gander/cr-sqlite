@@ -182,7 +182,8 @@ def test_merging_on_defaults():
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
     # w the same db_version as db2
     site_id = get_site_id(db2)
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 1, 1, site_id, 1, 0, '0')])
+    # db1 had dbV=1, source v=1 → local=2
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 1, 2, site_id, 1, 0, '0')])
 
     close(db1)
     close(db2)
@@ -236,7 +237,8 @@ def test_merging_larger_backfilled_default():
     # db version is pushed since 4 wins the col_version tie
     # col version stays since 1 is the max of winner and loser.
     site_id = get_site_id(db1)
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 4, 1, 1, site_id, 1, 0, '0')])
+    # db2 had dbV=1, source v=1 → local=2
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 4, 1, 2, site_id, 1, 0, '0')])
 
 
 def test_merging_larger():
@@ -324,8 +326,9 @@ def test_merging_on_defaults2():
     site_id1 = get_site_id(db1)
     site_id2 = get_site_id(db2)
 
+    # 'b'=4 is db1's own (stays at db_v=1), 'c'=3 from db2 merged at local db_v=2
     assert (changes == [('foo', b'\x01\t\x01', 'b', 4, 1, 1, site_id1, 1, 0, '0'),
-                        ('foo', b'\x01\t\x01', 'c', 3, 1, 1, site_id2, 1, 1, '0')])
+                        ('foo', b'\x01\t\x01', 'c', 3, 1, 2, site_id2, 1, 1, '0')])
 
     close(db1)
     close(db2)
@@ -339,12 +342,10 @@ def test_merging_on_defaults2():
 
     changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
     assert (changes == [
-        # update db_version to db1's own since b lost on db2.
-        # b had the value 2 on db2.
-        ('foo', b'\x01\t\x01', 'b', 4, 1, 1, site_id1, 1, 0, '0'),
-        # db2 c 3 wins given columns with no value after an alter
-        # do no merging
-        ('foo', b'\x01\t\x01', 'c', 3, 1, 1, site_id2, 1, 1, '0')])
+        # db2 c 3 wins given columns with no value after an alter (stays at db_v=1)
+        ('foo', b'\x01\t\x01', 'c', 3, 1, 1, site_id2, 1, 1, '0'),
+        # db1's 'b'=4 wins over db2's 'b'=2, merged at local db_v=2
+        ('foo', b'\x01\t\x01', 'b', 4, 1, 2, site_id1, 1, 0, '0')])
 
 
 def create_basic_db():
@@ -436,7 +437,11 @@ def test_merge_same_w_tie_breaker():
     changes2 = db2.execute("SELECT \"table\", pk, cid, val, col_version, site_id, db_version FROM crsql_changes").fetchall()
     changes3 = db3.execute("SELECT \"table\", pk, cid, val, col_version, site_id, db_version FROM crsql_changes").fetchall()
 
-    assert (changes1 == changes2 == changes3)
+    # db_versions are local to each node so we compare without them
+    changes1_no_dbv = [x[:-1] for x in changes1]
+    changes2_no_dbv = [x[:-1] for x in changes2]
+    changes3_no_dbv = [x[:-1] for x in changes3]
+    assert (changes1_no_dbv == changes2_no_dbv == changes3_no_dbv)
 
 
     # test that delete also merge when conflicts are shared
@@ -452,7 +457,9 @@ def test_merge_same_w_tie_breaker():
     changes1 = db1.execute("SELECT \"table\", pk, cid, val, col_version, site_id, db_version FROM crsql_changes").fetchall()
     changes2 = db2.execute("SELECT \"table\", pk, cid, val, col_version, site_id, db_version FROM crsql_changes").fetchall()
 
-    assert (changes1 == changes2)
+    changes1_no_dbv = [x[:-1] for x in changes1]
+    changes2_no_dbv = [x[:-1] for x in changes2]
+    assert (changes1_no_dbv == changes2_no_dbv)
 
     db3.execute("DELETE FROM foo WHERE a = 1;")
     db3.commit()
@@ -464,7 +471,10 @@ def test_merge_same_w_tie_breaker():
     changes2 = db2.execute("SELECT \"table\", pk, cid, val, col_version, site_id, db_version FROM crsql_changes").fetchall()
     changes3 = db3.execute("SELECT \"table\", pk, cid, val, col_version, site_id, db_version FROM crsql_changes").fetchall()
 
-    assert (changes1 == changes2 == changes3)
+    changes1_no_dbv = [x[:-1] for x in changes1]
+    changes2_no_dbv = [x[:-1] for x in changes2]
+    changes3_no_dbv = [x[:-1] for x in changes3]
+    assert (changes1_no_dbv == changes2_no_dbv == changes3_no_dbv)
 
 def test_merge_matching_clocks_lesser_value():
     def make_dbs():
@@ -488,9 +498,9 @@ def test_merge_matching_clocks_lesser_value():
     (db1, db2) = make_dbs()
     sync_left_to_right(db2, db1, 0)
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
-    # change since incoming is greater
+    # change since incoming is greater. db1 had dbV=1, source v=1 → local=2
     site_id = get_site_id(db2)
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 1, 1, site_id, 1, 0, '0')])
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 1, 2, site_id, 1, 0, '0')])
 
 
 def test_merge_larger_clock_larger_value():
@@ -511,12 +521,14 @@ def test_merge_larger_clock_larger_value():
     sync_left_to_right(db1, db2, 0)
     changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
     site_id = get_site_id(db1)
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 3, 2, 2, site_id, 1, 0, '0')])
+    # db2 had dbV=1, source v=2 wins → local=max(2,3)=3
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 3, 2, 3, site_id, 1, 0, '0')])
 
     (db1, db2) = make_dbs()
     sync_left_to_right(db2, db1, 0)
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
     site_id = get_site_id(db1)
+    # db1 already has the winning values, no change
     assert (changes == [('foo', b'\x01\t\x01', 'b', 3, 2, 2, site_id, 1, 0, '0')])
 
 
@@ -538,12 +550,14 @@ def test_merge_larger_clock_smaller_value():
     sync_left_to_right(db1, db2, 0)
     changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
     site_id = get_site_id(db1)
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 0, 2, 2, site_id, 1, 0, '0')])
+    # db2 had dbV=1, source v=2 wins → local=max(2,3)=3
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 0, 2, 3, site_id, 1, 0, '0')])
 
     (db1, db2) = make_dbs()
     sync_left_to_right(db2, db1, 0)
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
     site_id = get_site_id(db1)
+    # db1 already has the winning values, no change
     assert (changes == [('foo', b'\x01\t\x01', 'b', 0, 2, 2, site_id, 1, 0, '0')])
 
 
@@ -565,12 +579,14 @@ def test_merge_larger_clock_same_value():
     sync_left_to_right(db1, db2, 0)
     site_id = get_site_id(db1)
     changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 2, 2, site_id, 1, 0, '0')])
+    # db2 had dbV=1, source v=2 wins → local=max(2,3)=3
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 2, 3, site_id, 1, 0, '0')])
 
     (db1, db2) = make_dbs()
     sync_left_to_right(db2, db1, 0)
     site_id = get_site_id(db1)
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
+    # db1 already has the winning values, no change
     assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 2, 2, site_id, 1, 0, '0')])
 
 # Row exists but col added thus no defaults backfilled

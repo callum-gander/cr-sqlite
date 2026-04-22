@@ -460,14 +460,14 @@ class TestSiteIdEdgeCases:
     Edge cases around site_id handling that can occur in local-first.
     """
 
-    def test_clone_direct_sync_rejected_when_ahead(self):
+    def test_clone_direct_sync_accepted(self):
         """
-        A clone that has advanced past the original's db_version cannot sync
-        directly to the original. The merge code rejects changes tagged with
-        your own site_id at a db_version higher than your own — this is an
-        expected corruption guard (db_version.rs:259-266).
+        A clone that has advanced past the original's db_version can sync
+        directly to the original. The merge path skips insert_db_version for
+        our own site_id since other nodes may assign higher local versions
+        when merging our changes (cycle-back scenario).
 
-        In practice this doesn't matter: each device has a unique site_id,
+        In practice clones are rare: each device has a unique site_id,
         and backup/restore is done via vacuum+overwrite, not live sync.
         """
         tmpdir = tempfile.mkdtemp()
@@ -491,9 +491,12 @@ class TestSiteIdEdgeCases:
 
             clone_changes = get_all_changes(clone, since=1)
 
-            # Direct sync clone -> original should be rejected
-            with pytest.raises(Exception, match="Unable to insert db version"):
-                apply_changes(original, clone_changes)
+            # Direct sync clone -> original succeeds (own site_id changes
+            # skip insert_db_version in the merge path)
+            apply_changes(original, clone_changes)
+
+            # Data is merged
+            assert original.execute("SELECT * FROM foo ORDER BY a").fetchall() == [(1, 100), (2, 200)]
 
             close(original)
             close(clone)

@@ -264,14 +264,13 @@ class TestIssue380DuplicateSeq:
     def test_merge_different_source_versions_in_one_tx(self):
         """
         Exact reproduction from the issue: two changes from different source
-        db_versions merged in a single transaction.
+        db_versions merged in a single transaction should get unique seq values.
         """
         c = connect(":memory:")
         c.execute("CREATE TABLE foo (a INTEGER PRIMARY KEY NOT NULL, b INTEGER) STRICT;")
         c.execute("SELECT crsql_as_crr('foo')")
         c.commit()
 
-        # Create some local data to advance db_version
         c.execute("INSERT INTO foo VALUES (1, 1)")
         c.execute("INSERT INTO foo VALUES (2, 2)")
         c.execute("INSERT INTO foo VALUES (3, 3)")
@@ -291,35 +290,20 @@ class TestIssue380DuplicateSeq:
         )
         c.commit()
 
-        # Check for duplicate (db_version, seq) pairs
         changes = c.execute(
-            "SELECT [table], pk, cid, val, db_version, seq FROM crsql_changes "
+            "SELECT db_version, seq FROM crsql_changes "
             "WHERE val IN (4, 5) ORDER BY db_version, seq"
         ).fetchall()
 
-        print(f"  Changes after merge:")
-        seen = set()
-        duplicates = []
-        for ch in changes:
-            db_v, seq = ch[4], ch[5]
-            print(f"    val={ch[3]} db_version={db_v} seq={seq}")
-            key = (db_v, seq)
-            if key in seen:
-                duplicates.append(key)
-            seen.add(key)
-
-        if duplicates:
-            print(f"  DUPLICATE (db_version, seq) pairs found: {duplicates}")
-        else:
-            print("  No duplicate (db_version, seq) pairs — issue may be fixed")
+        pairs = [(db_v, seq) for db_v, seq in changes]
+        assert len(pairs) == len(set(pairs)), f"Duplicate (db_version, seq) pairs: {pairs}"
 
         close(c)
 
     def test_seq_uniqueness_within_db_version(self):
         """
-        More general test: merge changes from 5 different source db_versions
-        in a single transaction. Check that every (db_version, seq) pair in
-        the output is unique.
+        Merge changes from 5 different source db_versions in a single
+        transaction. Every (db_version, seq) pair should be unique.
         """
         c = connect(":memory:")
         c.execute("CREATE TABLE foo (a INTEGER PRIMARY KEY NOT NULL, b INTEGER) STRICT;")
@@ -337,32 +321,19 @@ class TestIssue380DuplicateSeq:
             )
         c.commit()
 
-        # Get all changes from the merge
         changes = c.execute(
-            "SELECT db_version, seq, val FROM crsql_changes ORDER BY db_version, seq"
+            "SELECT db_version, seq FROM crsql_changes ORDER BY db_version, seq"
         ).fetchall()
 
-        # Check uniqueness
-        seen = {}
-        duplicates = []
-        for db_v, seq, val in changes:
-            key = (db_v, seq)
-            if key in seen:
-                duplicates.append((key, seen[key], val))
-            seen[key] = val
-
-        if duplicates:
-            print(f"  DUPLICATE (db_version, seq) pairs: {duplicates}")
-        else:
-            print(f"  All {len(changes)} changes have unique (db_version, seq)")
+        pairs = [(db_v, seq) for db_v, seq in changes]
+        assert len(pairs) == len(set(pairs)), f"Duplicate (db_version, seq) pairs: {pairs}"
 
         close(c)
 
     def test_seq_ordering_for_sync_consumers(self):
         """
-        A sync consumer reads changes ordered by (db_version, seq) to
-        reconstruct transactions. If seq has duplicates, the consumer
-        can't distinguish ordering within a transaction.
+        Two remotes send changes merged in one transaction. Each db_version
+        should have unique seq values for sync consumer ordering.
         """
         c = connect(":memory:")
         c.execute("CREATE TABLE foo (a INTEGER PRIMARY KEY NOT NULL, b INTEGER) STRICT;")
@@ -372,7 +343,6 @@ class TestIssue380DuplicateSeq:
         remote1 = b'\x11' * 16
         remote2 = b'\x22' * 16
 
-        # Two remotes send changes that get merged in one transaction
         c.execute("BEGIN")
         c.execute(
             "INSERT INTO crsql_changes VALUES ('foo', X'010901', 'b', 10, 1, 1, ?, 1, 0, '0')",
@@ -388,26 +358,18 @@ class TestIssue380DuplicateSeq:
         )
         c.commit()
 
-        # A sync consumer queries changes
         changes = c.execute(
-            "SELECT db_version, seq, val FROM crsql_changes "
+            "SELECT db_version, seq FROM crsql_changes "
             "WHERE val IN (10, 20, 30) ORDER BY db_version, seq"
         ).fetchall()
 
-        print("  Sync consumer view (db_version, seq, val):")
-        for ch in changes:
-            print(f"    {ch}")
-
-        # Check each db_version has unique seq values
         by_version = {}
-        for db_v, seq, val in changes:
+        for db_v, seq in changes:
             by_version.setdefault(db_v, []).append(seq)
 
         for db_v, seqs in by_version.items():
-            if len(seqs) != len(set(seqs)):
-                print(f"  PROBLEM: db_version {db_v} has duplicate seqs: {seqs}")
-            else:
-                print(f"  db_version {db_v}: seqs are unique ({seqs})")
+            assert len(seqs) == len(set(seqs)), \
+                f"db_version {db_v} has duplicate seqs: {seqs}"
 
         close(c)
 
