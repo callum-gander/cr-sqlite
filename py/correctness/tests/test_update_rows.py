@@ -41,7 +41,11 @@ def test_update_pk():
                     ('foo', b'\x01\t\x02', 'b', 6, 1, 2, db1_site_id, 1, 1, '0')])
 
     db2_changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
-    assert (db2_changes == db1_changes)
+    # db2 is fresh: source v=1 → local=2, source v=2 → local=3
+    assert (db2_changes == [('foo', b'\x01\t\x01', 'a', 2, 1, 2, db1_site_id, 1, 0, '0'),
+                    ('foo', b'\x01\t\x01', 'b', 3, 1, 2, db1_site_id, 1, 1, '0'),
+                    ('foo', b'\x01\t\x02', 'a', 5, 1, 3, db1_site_id, 1, 0, '0'),
+                    ('foo', b'\x01\t\x02', 'b', 6, 1, 3, db1_site_id, 1, 1, '0')])
 
     # update primary key
     db1.execute("UPDATE foo SET id = 10 WHERE id = 1")
@@ -61,7 +65,13 @@ def test_update_pk():
     sync_left_to_right(db1, db2, 2)
 
     db2_changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
-    assert (db2_changes == db1_changes)
+    # db2 had dbV=3 from first sync, source v=3 → local=max(4,4)=4
+    assert (db2_changes == [('foo', b'\x01\t\x02', 'a', 5, 1, 3, db1_site_id, 1, 0, '0'),
+                ('foo', b'\x01\t\x02', 'b', 6, 1, 3, db1_site_id, 1, 1, '0'),
+                ('foo', b'\x01\t\x01', '-1', None, 2, 4, db1_site_id, 2, 0, '0'),
+                ('foo', b'\x01\t\n', '-1', None, 1, 4, db1_site_id, 1, 1, '0'),
+                ('foo', b'\x01\t\n', 'a', 2, 2, 4, db1_site_id, 1, 2, '0'),
+                ('foo', b'\x01\t\n', 'b', 3, 2, 4, db1_site_id, 1, 3, '0')])
 
     db2_foo = db2.execute("SELECT * FROM foo").fetchall()
     assert (db2_foo == db1_foo)
@@ -100,7 +110,11 @@ def test_empty_update_doesnt_change_db_version():
                     ('foo', b'\x01\t\x02', 'b', 6, 1, 2, db1_site_id, 1, 1, '0')])
 
     db2_changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
-    assert (db2_changes == db1_changes)
+    # db2 is fresh: source v=1 → local=2, source v=2 → local=3
+    assert (db2_changes == [('foo', b'\x01\t\x01', 'a', 2, 1, 2, db1_site_id, 1, 0, '0'),
+                    ('foo', b'\x01\t\x01', 'b', 3, 1, 2, db1_site_id, 1, 1, '0'),
+                    ('foo', b'\x01\t\x02', 'a', 5, 1, 3, db1_site_id, 1, 0, '0'),
+                    ('foo', b'\x01\t\x02', 'b', 6, 1, 3, db1_site_id, 1, 1, '0')])
 
     db1_db_version = db1.execute("SELECT crsql_db_version()").fetchone()[0]
     assert (db1_db_version == 2)
@@ -166,4 +180,8 @@ def test_ts_is_inserted():
                     ('foo', b'\x01\t\x02', 'b', 6, 1, 2, db1_site_id, 1, 1, '0')])
 
     db2_changes = db2.execute("SELECT * FROM crsql_changes").fetchall()
-    assert (db2_changes == db1_changes)
+    # db2 is fresh: source v=1 → local=2, source v=2 → local=3
+    assert (db2_changes == [('foo', b'\x01\t\x01', 'a', 2, 1, 2, db1_site_id, 1, 0, '18446744073709551615'),
+                    ('foo', b'\x01\t\x01', 'b', 3, 1, 2, db1_site_id, 1, 1, '18446744073709551615'),
+                    ('foo', b'\x01\t\x02', 'a', 5, 1, 3, db1_site_id, 1, 0, '0'),
+                    ('foo', b'\x01\t\x02', 'b', 6, 1, 3, db1_site_id, 1, 1, '0')])

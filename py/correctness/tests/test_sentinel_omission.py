@@ -102,8 +102,10 @@ def test_not_created_on_noop_merge():
         "SELECT count(*) FROM crsql_changes WHERE cid = '-1'").fetchone()[0] == 0)
     assert (b.execute(
         "SELECT count(*) FROM crsql_changes WHERE cid = '-1'").fetchone()[0] == 0)
-    assert (a.execute("SELECT crsql_db_version()").fetchall()
-            == b.execute("SELECT crsql_db_version()").fetchall())
+    # a's version is unchanged (it was the sender).
+    # b's version advanced because it allocated local versions for a's source batches.
+    assert a.execute("SELECT crsql_db_version()").fetchone()[0] == 200
+    assert b.execute("SELECT crsql_db_version()").fetchone()[0] == 400
 
 
 def test_not_created_on_update_merge():

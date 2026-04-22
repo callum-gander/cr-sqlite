@@ -23,13 +23,13 @@ def test_insert_row():
     c.commit()
 
     changes = c.execute("SELECT * FROM crsql_changes").fetchall()
-    # what we wrote should be what we get back
+    # local db_version = source+1 (5) since receiver assigns version > source
     assert (changes == [('foo',
                          b'\x01\t\x01',
                          '-1',
                          None,
                          3,
-                         4,
+                         5,
                          b"\x1d\xc8\xd6\xbb\x7f\x89A\x08\x83'\xd9C\x9ay'\xa4",
                          3,
                          6,
@@ -39,7 +39,7 @@ def test_insert_row():
                          'b',
                          1,
                          4,
-                         4,
+                         5,
                          b"\x1d\xc8\xd6\xbb\x7f\x89A\x08\x83'\xd9C\x9ay'\xa4",
                          3,
                          6,
@@ -53,13 +53,13 @@ def test_update_row():
     c.execute(
         "INSERT INTO crsql_changes VALUES ('foo', x'010901', 'b', 1, 4, 4, x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 3, 6, '0')")
     changes = c.execute("SELECT * FROM crsql_changes").fetchall()
-    # what we wrote should be what we get back since we win the merge
+    # local db_version = source+1 (5) since receiver assigns version > source
     assert (changes == [('foo',
                          b'\x01\t\x01',
                          '-1',
                          None,
                          3,
-                         4,
+                         5,
                          b'\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff',
                          3,
                          6,
@@ -69,7 +69,7 @@ def test_update_row():
                          'b',
                          1,
                          4,
-                         4,
+                         5,
                          b'\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff',
                          3,
                          6,
@@ -83,12 +83,13 @@ def test_delete_row():
     c.execute("INSERT INTO crsql_changes VALUES ('foo', x'010901', '-1', 1, 4, 4, x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF', 4, 6, '0')")
     c.commit()
     changes = c.execute("SELECT * FROM crsql_changes").fetchall()
+    # local db_version = source+1 (5) since receiver assigns version > source
     assert (changes == [('foo',
                         b'\x01\t\x01',
                          '-1',
                          None,
                          4,
-                         4,
+                         5,
                          b'\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff',
                          4,
                          6,

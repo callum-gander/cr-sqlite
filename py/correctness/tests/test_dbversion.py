@@ -67,21 +67,23 @@ def test_db_version_restored_from_disk():
     c2.execute("SELECT crsql_as_crr('foo');")
 
     sync_left_to_right(c, c2, 0)
-    assert c2.execute("SELECT crsql_db_version()").fetchone()[0] == 0
+    # c2 is fresh: source v=1 → local=2, source v=2 → local=3
+    assert c2.execute("SELECT crsql_db_version()").fetchone()[0] == 3
 
     # create changes that would override rows in db1
     c2.execute("UPDATE foo SET a = 5")
     c2.commit()
-    assert c2.execute("SELECT crsql_db_version()").fetchone()[0] == 1
+    assert c2.execute("SELECT crsql_db_version()").fetchone()[0] == 4
 
     sync_left_to_right(c2, c, 0)
-    assert c2.execute("SELECT crsql_db_version()").fetchone()[0] == 1
-    assert c.execute("SELECT crsql_db_version()").fetchone()[0] == 2
+    assert c2.execute("SELECT crsql_db_version()").fetchone()[0] == 4
+    # c receives own changes back (v=2,3) + c2's update (v=4) → local 3,4,5
+    assert c.execute("SELECT crsql_db_version()").fetchone()[0] == 5
 
     # Close and reopen to check that version was persisted and re-initialized correctly
     close(c)
     c = connect('file:dbversion_c3.db?mode=ro', uri=True)
-    assert c.execute("SELECT crsql_db_version()").fetchone()[0] == 2
+    assert c.execute("SELECT crsql_db_version()").fetchone()[0] == 5
 
     close(c)
 
@@ -168,30 +170,32 @@ def test_overwriting_keeps_track_of_true_db_version():
 
     sync_left_to_right(db2, db1, 0)
 
-    assert db2.execute("SELECT crsql_db_version()").fetchone()[0] == min_db_v + 1
-    assert db2.execute("SELECT db_version from crsql_db_versions where site_id = ?", (bytes(db1_site_id),)).fetchone()[0] == min_db_v + 2
+    # db2: fresh → sync source v=1→local 2, v=2→local 3, then UPDATE→local 4
+    assert db2.execute("SELECT crsql_db_version()").fetchone()[0] == 4
+    assert db2.execute("SELECT db_version from crsql_db_versions where site_id = ?", (bytes(db1_site_id),)).fetchone()[0] == 2
 
-    assert db1.execute("SELECT crsql_db_version()").fetchone()[0] == min_db_v + 2
-    assert db1.execute("SELECT db_version from crsql_db_versions where site_id = ?", (bytes(db2_site_id),)).fetchone()[0] == min_db_v + 1
+    # db1: received db2's update (source v=4) + own changes cycling back
+    assert db1.execute("SELECT crsql_db_version()").fetchone()[0] == 5
+    assert db1.execute("SELECT db_version from crsql_db_versions where site_id = ?", (bytes(db2_site_id),)).fetchone()[0] == 4
 
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 3, 1, db2_site_id, 1, 0, '0')])
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 2, 3, 5, db2_site_id, 1, 0, '0')])
 
     db1.execute("UPDATE foo SET b = 3;")
-    db1.commit() # db_version = 3
+    db1.commit()
 
     sync_left_to_right(db1, db2, 0)
 
     changes = db1.execute("SELECT * FROM crsql_changes").fetchall()
 
-    assert (changes == [('foo', b'\x01\t\x01', 'b', 3, 4, 3, db1_site_id, 1, 0, '0')])
+    assert (changes == [('foo', b'\x01\t\x01', 'b', 3, 4, 6, db1_site_id, 1, 0, '0')])
 
     db_versions_1 = db1.execute("SELECT * FROM crsql_db_versions").fetchall()
     db_versions_2 = db2.execute("SELECT * FROM crsql_db_versions").fetchall()
 
-    assert db_versions_1 == [(db1_site_id, 3), (db2_site_id, 1)]
-
-    assert db_versions_1 == db_versions_2
+    assert db_versions_1 == [(db1_site_id, 6), (db2_site_id, 4)]
+    # Each node has its own local versions, so db_versions tables differ
+    assert db_versions_2 == [(db2_site_id, 7), (db1_site_id, 6)]
 
     ## test that db_version is updated even when a received change does not win.
     db1.execute("UPDATE foo SET b = 4;")
@@ -201,20 +205,19 @@ def test_overwriting_keeps_track_of_true_db_version():
 
     db2.execute("UPDATE foo SET b = 6;") # this change will lose at db1
     db2.commit()
-    assert db2.execute("SELECT crsql_db_version()").fetchone()[0] == min_db_v + 2
+    assert db2.execute("SELECT crsql_db_version()").fetchone()[0] == 8
 
 
     sync_left_to_right(db2, db1, 0)
-    assert db1.execute("SELECT crsql_db_version()").fetchone()[0] == min_db_v + 5
-    assert db1.execute('SELECT db_version from crsql_db_versions where site_id = ?', (bytes(db2_site_id),)).fetchone()[0] == min_db_v + 2
+    assert db1.execute("SELECT crsql_db_version()").fetchone()[0] == 9
+    assert db1.execute('SELECT db_version from crsql_db_versions where site_id = ?', (bytes(db2_site_id),)).fetchone()[0] == 8
 
     sync_left_to_right(db1, db2, 0)
     db_versions_1 = db1.execute("SELECT * FROM crsql_db_versions").fetchall()
     db_versions_2 = db2.execute("SELECT * FROM crsql_db_versions").fetchall()
 
-    assert db_versions_1 == [(db1_site_id, 5), (db2_site_id, 2)]
-
-    assert db_versions_1 == db_versions_2
+    assert db_versions_1 == [(db1_site_id, 9), (db2_site_id, 8)]
+    assert db_versions_2 == [(db2_site_id, 9), (db1_site_id, 8)]
 
     close(db1)
     close(db2)

@@ -212,6 +212,75 @@ pub extern "C" fn crsql_drop_ordinal_map(ext_data: *mut crsql_ExtData) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn crsql_init_seen_source_db_versions_map(ext_data: *mut crsql_ExtData) {
+    let map: BTreeMap<(Vec<u8>, i64), i64> = BTreeMap::new();
+    unsafe { (*ext_data).seenSourceDbVersions = Box::into_raw(Box::new(map)) as *mut c_void }
+}
+
+#[no_mangle]
+pub extern "C" fn crsql_drop_seen_source_db_versions_map(ext_data: *mut crsql_ExtData) {
+    unsafe {
+        drop(Box::from_raw(
+            (*ext_data).seenSourceDbVersions as *mut BTreeMap<(Vec<u8>, i64), i64>,
+        ));
+    }
+}
+
+pub fn next_merge_db_version(
+    db: *mut sqlite3,
+    ext_data: *mut crsql_ExtData,
+    source_site_id: &[u8],
+    source_db_version: i64,
+) -> Result<i64, String> {
+    unsafe {
+        let mut seen: mem::ManuallyDrop<Box<BTreeMap<(Vec<u8>, i64), i64>>> =
+            mem::ManuallyDrop::new(Box::from_raw(
+                (*ext_data).seenSourceDbVersions as *mut BTreeMap<(Vec<u8>, i64), i64>,
+            ));
+
+        let key = (source_site_id.to_vec(), source_db_version);
+        if let Some(&local_v) = seen.get(&key) {
+            return Ok(local_v);
+        }
+
+        fill_db_version_if_needed(db, ext_data)?;
+
+        let mut ret = core::cmp::max(
+            (*ext_data).dbVersion + 1,
+            (*ext_data).pendingDbVersion + 1,
+        );
+        if ret <= source_db_version {
+            ret = source_db_version + 1;
+        }
+
+        let site_id_slice =
+            core::slice::from_raw_parts((*ext_data).siteId, SITE_ID_LEN as usize);
+
+        let bind_result = (*ext_data)
+            .pSetDbVersionStmt
+            .bind_blob(1, site_id_slice, sqlite_nostd::Destructor::STATIC)
+            .and_then(|_| (*ext_data).pSetDbVersionStmt.bind_int64(2, ret));
+
+        if bind_result.is_err() {
+            return Err("failed binding to pSetDbVersionStmt".into());
+        }
+
+        let res = (*ext_data).pSetDbVersionStmt.step();
+
+        reset_cached_stmt((*ext_data).pSetDbVersionStmt)
+            .map_err(|_| "failed to reset cached pSetDbVersionStmt")?;
+
+        if res.is_err() {
+            return Err("failed to insert db_version for current site ID".into());
+        }
+
+        (*ext_data).pendingDbVersion = ret;
+        seen.insert(key, ret);
+        Ok(ret)
+    }
+}
+
 pub fn insert_db_version(
     ext_data: *mut crsql_ExtData,
     insert_site_id: &[u8],
@@ -257,8 +326,6 @@ pub fn insert_db_version(
         // ensure the site_id exists in the crsql_site_id table
         let ordinal = get_or_set_site_ordinal(ext_data, insert_site_id)?;
         if ordinal == 0 {
-            // we manage our own db_version internally but only error if we get a bigger db_version
-            // cause we can get our own rows from other nodes but the version should never be greater than our own.
             let db_version = (*ext_data).dbVersion;
             if insert_db_vrsn > db_version {
                 return Err(ResultCode::ERROR);
