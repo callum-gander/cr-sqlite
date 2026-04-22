@@ -113,8 +113,8 @@ class TestIssue433DropTableCorruption:
 
     def test_drop_crr_via_begin_alter(self):
         """
-        Upstream reports that crsql_begin_alter + DROP + crsql_commit_alter
-        fails with 'failed compacting tables post alteration'.
+        begin_alter + DROP + commit_alter should clean up internal tables
+        and leave crsql_changes working.
         """
         c = connect(":memory:")
         c.execute("CREATE TABLE foo (a INTEGER PRIMARY KEY NOT NULL, b INTEGER) STRICT;")
@@ -124,15 +124,21 @@ class TestIssue433DropTableCorruption:
         c.execute("INSERT INTO foo VALUES (1, 10)")
         c.commit()
 
-        try:
-            c.execute("SELECT crsql_begin_alter('foo')")
-            c.execute("DROP TABLE foo")
-            c.execute("SELECT crsql_commit_alter('main', 'foo', 1)")
-            c.commit()
-            print("  begin_alter + DROP + commit_alter: SUCCEEDED")
-        except Exception as e:
-            print(f"  begin_alter + DROP + commit_alter: FAILED — {e}")
-            c.rollback()
+        # Drop via the proper alter path
+        c.execute("SELECT crsql_begin_alter('foo')")
+        c.execute("DROP TABLE foo")
+        c.execute("SELECT crsql_commit_alter('foo')")
+        c.commit()
+
+        # Internal tables should be cleaned up
+        orphaned = c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'foo__crsql_%'"
+        ).fetchall()
+        assert len(orphaned) == 0, f"Orphaned tables remain: {orphaned}"
+
+        # crsql_changes should still work (returns empty since the only CRR is gone)
+        changes = c.execute("SELECT * FROM crsql_changes").fetchall()
+        assert len(changes) == 0
 
         close(c)
 
@@ -182,11 +188,11 @@ class TestIssue433DropTableCorruption:
         close(sender)
         close(receiver)
 
-    def test_drop_one_crr_other_crr_still_works(self):
+    def test_drop_one_crr_raw_breaks_other_crr(self):
         """
-        Two CRR tables. Drop one. The other should still be queryable
-        via crsql_changes.
+        Two CRR tables. Drop one WITHOUT begin/commit alter.
         CONFIRMED BUG: dropping ANY CRR breaks crsql_changes for ALL tables.
+        This is the raw DROP path — no fix applied here.
         """
         c = connect(":memory:")
         c.execute("CREATE TABLE foo (a INTEGER PRIMARY KEY NOT NULL, b INTEGER) STRICT;")
@@ -202,9 +208,42 @@ class TestIssue433DropTableCorruption:
         c.execute("DROP TABLE foo")
         c.commit()
 
-        # CONFIRMED: dropping foo breaks crsql_changes even for bar
+        # Raw DROP still breaks — no alter wrappers means no cleanup
         with pytest.raises(Exception, match="query aborted"):
             c.execute("SELECT * FROM crsql_changes").fetchall()
+
+    def test_drop_one_crr_via_alter_other_crr_still_works(self):
+        """
+        Two CRR tables. Drop one via begin/commit alter.
+        The other should still be queryable via crsql_changes.
+        """
+        c = connect(":memory:")
+        c.execute("CREATE TABLE foo (a INTEGER PRIMARY KEY NOT NULL, b INTEGER) STRICT;")
+        c.execute("SELECT crsql_as_crr('foo')")
+        c.execute("CREATE TABLE bar (x INTEGER PRIMARY KEY NOT NULL, y TEXT) STRICT;")
+        c.execute("SELECT crsql_as_crr('bar')")
+        c.commit()
+
+        c.execute("INSERT INTO foo VALUES (1, 10)")
+        c.execute("INSERT INTO bar VALUES (1, 'hello')")
+        c.commit()
+
+        # Drop foo via the proper alter path
+        c.execute("SELECT crsql_begin_alter('foo')")
+        c.execute("DROP TABLE foo")
+        c.execute("SELECT crsql_commit_alter('foo')")
+        c.commit()
+
+        # bar's changes should still be queryable
+        changes = c.execute("SELECT * FROM crsql_changes").fetchall()
+        bar_changes = [r for r in changes if r[0] == 'bar']
+        assert len(bar_changes) > 0, "bar changes should still be visible"
+
+        # foo internal tables should be gone
+        orphaned = c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'foo__crsql_%'"
+        ).fetchall()
+        assert len(orphaned) == 0
 
         close(c)
 

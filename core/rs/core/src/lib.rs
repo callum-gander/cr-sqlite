@@ -868,6 +868,39 @@ unsafe extern "C" fn x_crsql_commit_alter(
     let mut err_msg = null_mut();
     let db = ctx.db_handle();
 
+    // Check if the base table was dropped during this alter.
+    // If so, clean up the orphaned internal tables and return.
+    let table_exists = match db.prepare_v2(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND tbl_name = ? LIMIT 1",
+    ) {
+        Ok(stmt) => {
+            let _ = stmt.bind_text(1, table_name, sqlite::Destructor::STATIC);
+            matches!(stmt.step(), Ok(ResultCode::ROW))
+        }
+        Err(_) => false,
+    };
+
+    if !table_exists {
+        let cleanup_sql = format!(
+            "DROP TABLE IF EXISTS \"{table_name}__crsql_clock\";
+             DROP TABLE IF EXISTS \"{table_name}__crsql_pks\";",
+            table_name = crate::util::escape_ident(table_name),
+        );
+        if db.exec_safe(&cleanup_sql).is_err() {
+            ctx.result_error("failed to clean up internal tables after DROP TABLE");
+            let _ = db.exec_safe("ROLLBACK");
+            return;
+        }
+        (*ext_data).updatedTableInfosThisTx = 0;
+        if db.exec_safe("RELEASE alter_crr").is_err() {
+            ctx.result_error("failed to release savepoint after DROP TABLE cleanup");
+            let _ = db.exec_safe("ROLLBACK");
+            return;
+        }
+        ctx.result_text_static("OK");
+        return;
+    }
+
     let rc = if non_destructive {
         match pull_table_info(db, table_name, &mut err_msg as *mut _) {
             Ok(table_info) => {
